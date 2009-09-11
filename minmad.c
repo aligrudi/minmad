@@ -46,8 +46,9 @@ static int getpos(void)
 static void printinfo(void)
 {
 	int loc = getpos() * 1000.0 / len;
-	int secs = mad_timer_count(played, MAD_UNITS_SECONDS);
-	printf("minmad:   %3d.%d%%   %8d\r", loc / 10, loc % 10, secs);
+	int decis = mad_timer_count(played, MAD_UNITS_DECISECONDS);
+	printf("minmad:   %3d.%d%%   %8d.%ds\r",
+		loc / 10, loc % 10, decis / 10, decis % 10);
 	fflush(stdout);
 }
 
