@@ -101,12 +101,9 @@ static int execkey(void)
 			break;
 		case 'p':
 		case ' ':
-			if (cmd != CMD_PAUSE) {
-				cmd = CMD_PAUSE;
-				pos = getpos();
-				return 1;
-			}
-			break;
+			cmd = CMD_PAUSE;
+			pos = getpos();
+			return 1;
 		case 'q':
 			cmd = CMD_QUIT;
 			return 1;
@@ -161,7 +158,6 @@ static enum mad_flow output(void *data,
 		push_sample(mixed + i * 4, scale(pcm->samples[0][i]));
 		push_sample(mixed + i * 4 + 2, scale(pcm->samples[right][i]));
 	}
-	/* XXX: call snd_pcm_writei less often */
 	if (snd_pcm_writei(alsa, mixed, pcm->length) < 0)
 		snd_pcm_prepare(alsa);
 	if (execkey())
