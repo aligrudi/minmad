@@ -26,6 +26,7 @@ static struct mad_decoder decoder;
 static int pos;
 static int count;
 static mad_timer_t played;
+static unsigned int rate = 44100;
 
 static struct termios termios;
 static int cmd;
@@ -146,6 +147,12 @@ static void push_sample(char *buf, mad_fixed_t sample)
 	*buf++ = (sample >> 8) & 0xff;
 }
 
+static void alsa_conf(void)
+{
+	snd_pcm_set_params(alsa, SND_PCM_FORMAT_S16_LE,
+			SND_PCM_ACCESS_RW_INTERLEAVED, 2, rate, 1, 500000);
+}
+
 static char mixed[1 << 20];
 static enum mad_flow output(void *data,
 			 struct mad_header const *header,
@@ -157,6 +164,10 @@ static enum mad_flow output(void *data,
 	for (i = 0; i < pcm->length; i++) {
 		push_sample(mixed + i * 4, scale(pcm->samples[0][i]));
 		push_sample(mixed + i * 4 + 2, scale(pcm->samples[right][i]));
+	}
+	if (header->samplerate != rate) {
+		rate = header->samplerate;
+		alsa_conf();
 	}
 	if (snd_pcm_writei(alsa, mixed, pcm->length) < 0)
 		snd_pcm_prepare(alsa);
@@ -195,11 +206,9 @@ static void decode(void)
 
 static void alsa_init(void)
 {
-	int format = SND_PCM_FORMAT_S16_LE;
 	if (snd_pcm_open(&alsa, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0)
 		return;
-	snd_pcm_set_params(alsa, format, SND_PCM_ACCESS_RW_INTERLEAVED,
-			2, 44100, 1, 500000);
+	alsa_conf();
 	snd_pcm_prepare(alsa);
 }
 
