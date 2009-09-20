@@ -195,11 +195,18 @@ static void decode(void)
 {
 	mad_decoder_init(&decoder, NULL, input, 0, 0, output, error, 0);
 	while (cmd != CMD_QUIT && pos != len) {
-		if (cmd == CMD_PAUSE)
-			while (readkey() != 'p')
-				waitkey();
-		cmd = CMD_PLAY;
 		mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
+		while (cmd == CMD_PAUSE)
+			switch (readkey()) {
+			case 'p':
+				cmd = CMD_PLAY;
+				break;
+			case 'q':
+				cmd = CMD_QUIT;
+				break;
+			default:
+				waitkey();
+			}
 	}
 	mad_decoder_finish(&decoder);
 }
