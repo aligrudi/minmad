@@ -33,6 +33,7 @@ static unsigned char *mem;
 static unsigned long len;
 static struct mad_decoder decoder;
 static int pos;
+static int fsize;
 static int count;
 static mad_timer_t played;
 static unsigned int rate = 44100;
@@ -48,14 +49,18 @@ static int readkey(void)
 	return b;
 }
 
-static int getpos(void)
+static void updatepos(void)
 {
-	return decoder.sync->stream.this_frame - mem;
+	if (decoder.sync) {
+		pos = decoder.sync->stream.this_frame - mem;
+		fsize = decoder.sync->stream.next_frame -
+			decoder.sync->stream.this_frame;
+	}
 }
 
 static void printinfo(void)
 {
-	int loc = getpos() * 1000.0 / len;
+	int loc = pos * 1000.0 / len;
 	int decis = mad_timer_count(played, MAD_UNITS_DECISECONDS);
 	printf("minmad:   %3d.%d%%   %8d.%ds\r",
 		loc / 10, loc % 10, decis / 10, decis % 10);
@@ -69,26 +74,21 @@ static int getcount(int def)
 	return result;
 }
 
-static int framesize(void)
-{
-	return decoder.sync->stream.next_frame -
-		decoder.sync->stream.this_frame;
-}
-
 static void seek(int n)
 {
-	pos = MAX(0, MIN(len, getpos() + n * framesize()));
+	pos = MAX(0, MIN(len, pos + n * fsize));
 }
 
 static void seek_thousands(int n)
 {
 	pos = len * (float) n / 1000;
-	pos -= pos % framesize();
+	pos -= pos % fsize;
 }
 
 static int execkey(void)
 {
 	int c;
+	updatepos();
 	while ((c = readkey()) != -1) {
 		switch (c) {
 		case 'j':
@@ -111,8 +111,7 @@ static int execkey(void)
 			break;
 		case 'p':
 		case ' ':
-			cmd = CMD_PAUSE;
-			pos = getpos();
+			cmd = cmd ? CMD_PLAY : CMD_PAUSE;
 			return 1;
 		case 'q':
 			cmd = CMD_QUIT;
@@ -204,18 +203,12 @@ static void decode(void)
 {
 	mad_decoder_init(&decoder, NULL, input, 0, 0, output, error, 0);
 	while (cmd != CMD_QUIT && pos != len) {
-		mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
-		while (cmd == CMD_PAUSE)
-			switch (readkey()) {
-			case 'p':
-				cmd = CMD_PLAY;
-				break;
-			case 'q':
-				cmd = CMD_QUIT;
-				break;
-			default:
-				waitkey();
-			}
+		if (cmd == CMD_PLAY)
+			mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
+		if (cmd == CMD_PAUSE) {
+			waitkey();
+			execkey();
+		}
 	}
 	mad_decoder_finish(&decoder);
 }
