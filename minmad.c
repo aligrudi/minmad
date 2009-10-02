@@ -32,7 +32,7 @@ static snd_pcm_t *alsa;
 static unsigned char *mem;
 static unsigned long len;
 static struct mad_decoder decoder;
-static int pos;
+static unsigned long pos;
 static int fsize;
 static int count;
 static mad_timer_t played;
@@ -129,10 +129,13 @@ static int execkey(void)
 
 static enum mad_flow input(void *data, struct mad_stream *stream)
 {
-	if (pos == len)
+	static unsigned long cpos;
+	if (pos && pos == cpos) {
+		cmd = CMD_QUIT;
 		return MAD_FLOW_STOP;
+	}
+	cpos = pos;
 	mad_stream_buffer(stream, mem + pos, len - pos);
-	pos = len;
 	return MAD_FLOW_CONTINUE;
 }
 
@@ -202,7 +205,7 @@ static void waitkey(void)
 static void decode(void)
 {
 	mad_decoder_init(&decoder, NULL, input, 0, 0, output, error, 0);
-	while (cmd != CMD_QUIT && pos != len) {
+	while (cmd != CMD_QUIT) {
 		if (cmd == CMD_PLAY)
 			mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
 		if (cmd == CMD_PAUSE) {
