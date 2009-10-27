@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <pty.h>
+#include <signal.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -234,7 +235,8 @@ static void term_setup(void)
 	struct termios newtermios;
 	tcgetattr(STDIN_FILENO, &termios);
 	newtermios = termios;
-	cfmakeraw(&newtermios);
+	newtermios.c_lflag &= ~ICANON;
+	newtermios.c_lflag &= ~ECHO;
 	tcsetattr(STDIN_FILENO, TCSAFLUSH, &newtermios);
 	fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
 }
@@ -242,6 +244,11 @@ static void term_setup(void)
 static void term_cleanup(void)
 {
 	tcsetattr(STDIN_FILENO, 0, &termios);
+}
+
+static void sigcont(int sig)
+{
+	term_setup();
 }
 
 int main(int argc, char *argv[])
@@ -258,6 +265,7 @@ int main(int argc, char *argv[])
 	if (mem == MAP_FAILED)
 		return 1;
 	term_setup();
+	signal(SIGCONT, sigcont);
 	alsa_init();
 	decode();
 	alsa_close();
