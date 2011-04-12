@@ -1,22 +1,23 @@
 /*
- * minmad - a minimal mp3 player using libmad and alsa
+ * minmad - a minimal mp3 player using libmad and oss
  *
- * Copyright (C) 2009 Ali Gholami Rudi
+ * Copyright (C) 2009-2011 Ali Gholami Rudi
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License, as published by the
- * Free Software Foundation.
+ * This program is released under GNU GPL version 2.
  */
 #include <ctype.h>
 #include <fcntl.h>
 #include <pty.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/poll.h>
 #include <termios.h>
 #include <unistd.h>
-#include <alsa/asoundlib.h>
+#include <sys/soundcard.h>
 #include <mad.h>
 
 #define CTRLKEY(x)		((x) - 96)
@@ -29,7 +30,7 @@
 #define CMD_PAUSE	1
 #define CMD_QUIT	2
 
-static snd_pcm_t *alsa;
+static int afd;
 static unsigned char *mem;
 static unsigned long len;
 static struct mad_decoder decoder;
@@ -159,10 +160,13 @@ static void push_sample(char *buf, mad_fixed_t sample)
 	*buf++ = (sample >> 8) & 0xff;
 }
 
-static void alsa_conf(void)
+static void oss_conf(void)
 {
-	snd_pcm_set_params(alsa, SND_PCM_FORMAT_S16_LE,
-			SND_PCM_ACCESS_RW_INTERLEAVED, 2, rate, 1, 500000);
+	int ch = 2;
+	int bits = 16;
+	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
+	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
+	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
 }
 
 static char mixed[1 << 20];
@@ -179,10 +183,9 @@ static enum mad_flow output(void *data,
 	}
 	if (header->samplerate != rate) {
 		rate = header->samplerate;
-		alsa_conf();
+		oss_conf();
 	}
-	if (snd_pcm_writei(alsa, mixed, pcm->length) < 0)
-		snd_pcm_prepare(alsa);
+	write(afd, mixed, pcm->length * 4);
 	if (execkey())
 		return MAD_FLOW_STOP;
 	return MAD_FLOW_CONTINUE;
@@ -217,17 +220,18 @@ static void decode(void)
 	mad_decoder_finish(&decoder);
 }
 
-static void alsa_init(void)
+static void oss_init(void)
 {
-	if (snd_pcm_open(&alsa, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0)
-		return;
-	alsa_conf();
-	snd_pcm_prepare(alsa);
+	afd = open("/dev/dsp", O_RDWR);
+	if (afd < 0) {
+		fprintf(stderr, "cannot open /dev/dsp\n");
+		exit(1);
+	}
 }
 
-static void alsa_close(void)
+static void oss_close(void)
 {
-	snd_pcm_close(alsa);
+	close(afd);
 }
 
 static void term_setup(void)
@@ -266,9 +270,9 @@ int main(int argc, char *argv[])
 		return 1;
 	term_setup();
 	signal(SIGCONT, sigcont);
-	alsa_init();
+	oss_init();
 	decode();
-	alsa_close();
+	oss_close();
 	term_cleanup();
 	munmap(mem, stat.st_size);
 	close(fd);

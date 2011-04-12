@@ -1,6 +1,6 @@
 CC = cc
-CFLAGS = -std=gnu89 -pedantic -Wall -O2
-LDFLAGS = -lmad -lasound
+CFLAGS = -Wall -Os
+LDFLAGS = -lmad
 
 all: minmad
 .c.o:
