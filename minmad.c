@@ -38,7 +38,7 @@ static unsigned long pos;
 static int fsize;
 static int count;
 static mad_timer_t played;
-static unsigned int rate = 44100;
+static unsigned int rate;
 
 static struct termios termios;
 static int cmd;
