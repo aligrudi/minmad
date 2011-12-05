@@ -27,20 +27,22 @@
 #define JMP2		60
 #define JMP1		10
 
-static int afd;
-static unsigned char *mem;
-static unsigned long len;
 static struct mad_decoder decoder;
-static unsigned long pos;
+static mad_timer_t played;
+static int afd;			/* oss fd */
+static struct termios termios;
+
+static char filename[1 << 12];
+static unsigned char *mem;
+static long len;
+static long pos;
 static int frame_sz;		/* frame size */
 static int frame_ms;		/* frame duration in milliseconds */
-static int count;
-static mad_timer_t played;
-static unsigned int rate;
+static int rate;
 
-static struct termios termios;
 static int exited;
 static int paused;
+static int count;
 
 static int readkey(void)
 {
@@ -59,8 +61,8 @@ static void updatepos(void)
 			decoder.sync->stream.this_frame;
 		ms = mad_timer_count(decoder.sync->frame.header.duration,
 					MAD_UNITS_MILLISECONDS);
-		frame_ms = frame_ms ? ((frame_ms << 3) - frame_ms + ms) >> 3 : ms;
-		frame_sz = frame_sz ? ((frame_sz << 3) - frame_sz + sz) >> 3 : sz;
+		frame_ms = frame_ms ? ((frame_ms << 5) - frame_ms + ms) >> 5 : ms;
+		frame_sz = frame_sz ? ((frame_sz << 5) - frame_sz + sz) >> 5 : sz;
 	}
 }
 
@@ -68,10 +70,12 @@ static void printinfo(void)
 {
 	int per = pos * 1000.0 / len;
 	int dur = mad_timer_count(played, MAD_UNITS_DECISECONDS);
-	int loc = pos * frame_ms / frame_sz / 1000;
-	printf("minmad:   %3d:%02d   %3d.%d%%   %8d.%ds\r",
-		loc / 60, loc % 60,
-		per / 10, per % 10, dur / 10, dur % 10);
+	int loc = pos / frame_sz * frame_ms / 1000;
+	printf("%02d.%d%%  (%d:%02d:%02d - %04d.%ds)  [%30s]\r",
+		per / 10, per % 10,
+		loc / 3600, (loc % 3600) / 60, loc % 60,
+		dur / 10, dur % 10,
+		filename);
 	fflush(stdout);
 }
 
@@ -273,6 +277,8 @@ int main(int argc, char *argv[])
 	if (argc < 2)
 		return 1;
 	fd = open(argv[1], O_RDONLY);
+	strcpy(filename, argv[1]);
+	filename[30] = '\0';
 	if (fstat(fd, &stat) == -1 || stat.st_size == 0)
 		return 1;
 	mem = mmap(0, stat.st_size, PROT_READ, MAP_SHARED, fd, 0);
