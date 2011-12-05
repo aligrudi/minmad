@@ -23,25 +23,24 @@
 #define CTRLKEY(x)		((x) - 96)
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
-#define LONGJUMP	1000
-#define MINIJUMP	100
-
-#define CMD_PLAY	0
-#define CMD_PAUSE	1
-#define CMD_QUIT	2
+#define JMP3		600
+#define JMP2		60
+#define JMP1		10
 
 static int afd;
 static unsigned char *mem;
 static unsigned long len;
 static struct mad_decoder decoder;
 static unsigned long pos;
-static int fsize;
+static int fsize;		/* frame size */
+static int flen;		/* frame duration in milliseconds */
 static int count;
 static mad_timer_t played;
 static unsigned int rate;
 
 static struct termios termios;
-static int cmd;
+static int exited;
+static int paused;
 
 static int readkey(void)
 {
@@ -57,15 +56,19 @@ static void updatepos(void)
 		pos = decoder.sync->stream.this_frame - mem;
 		fsize = decoder.sync->stream.next_frame -
 			decoder.sync->stream.this_frame;
+		flen = mad_timer_count(decoder.sync->frame.header.duration,
+					MAD_UNITS_MILLISECONDS);
 	}
 }
 
 static void printinfo(void)
 {
-	int loc = pos * 1000.0 / len;
-	int decis = mad_timer_count(played, MAD_UNITS_DECISECONDS);
-	printf("minmad:   %3d.%d%%   %8d.%ds\r",
-		loc / 10, loc % 10, decis / 10, decis % 10);
+	int per = pos * 1000.0 / len;
+	int dur = mad_timer_count(played, MAD_UNITS_DECISECONDS);
+	int loc = pos * flen / fsize / 1000;
+	printf("minmad:   %3d:%02d   %3d.%d%%   %8d.%ds\r",
+		loc / 60, loc % 60,
+		per / 10, per % 10, dur / 10, dur % 10);
 	fflush(stdout);
 }
 
@@ -78,7 +81,8 @@ static int getcount(int def)
 
 static void seek(int n)
 {
-	pos = MAX(0, MIN(len, pos + n * fsize));
+	int diff = n * fsize * 1000 / (flen ? flen : 40);
+	pos = MAX(0, MIN(len, pos + diff));
 }
 
 static void seek_thousands(int n)
@@ -93,17 +97,23 @@ static int execkey(void)
 	updatepos();
 	while ((c = readkey()) != -1) {
 		switch (c) {
+		case 'J':
+			seek(JMP3 * getcount(1));
+			return 1;
+		case 'K':
+			seek(-JMP3 * getcount(1));
+			return 1;
 		case 'j':
-			seek(LONGJUMP * getcount(1));
+			seek(JMP2 * getcount(1));
 			return 1;
 		case 'k':
-			seek(-LONGJUMP * getcount(1));
+			seek(-JMP2 * getcount(1));
 			return 1;
 		case 'l':
-			seek(MINIJUMP * getcount(1));
+			seek(JMP1 * getcount(1));
 			return 1;
 		case 'h':
-			seek(-MINIJUMP * getcount(1));
+			seek(-JMP1 * getcount(1));
 			return 1;
 		case '%':
 			seek_thousands(getcount(0) * 10);
@@ -113,10 +123,10 @@ static int execkey(void)
 			break;
 		case 'p':
 		case ' ':
-			cmd = cmd ? CMD_PLAY : CMD_PAUSE;
+			paused = !paused;
 			return 1;
 		case 'q':
-			cmd = CMD_QUIT;
+			exited = 1;
 			return 1;
 		case 27:
 			count = 0;
@@ -133,7 +143,7 @@ static enum mad_flow input(void *data, struct mad_stream *stream)
 {
 	static unsigned long cpos;
 	if (pos && pos == cpos) {
-		cmd = CMD_QUIT;
+		exited = 1;
 		return MAD_FLOW_STOP;
 	}
 	cpos = pos;
@@ -186,9 +196,7 @@ static enum mad_flow output(void *data,
 		oss_conf();
 	}
 	write(afd, mixed, pcm->length * 4);
-	if (execkey())
-		return MAD_FLOW_STOP;
-	return MAD_FLOW_CONTINUE;
+	return execkey() ? MAD_FLOW_STOP : MAD_FLOW_CONTINUE;
 }
 
 static enum mad_flow error(void *data,
@@ -209,12 +217,12 @@ static void waitkey(void)
 static void decode(void)
 {
 	mad_decoder_init(&decoder, NULL, input, 0, 0, output, error, 0);
-	while (cmd != CMD_QUIT) {
-		if (cmd == CMD_PLAY)
-			mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
-		if (cmd == CMD_PAUSE) {
+	while (!exited) {
+		if (paused) {
 			waitkey();
 			execkey();
+		} else {
+			mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
 		}
 	}
 	mad_decoder_finish(&decoder);
