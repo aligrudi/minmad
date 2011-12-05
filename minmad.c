@@ -28,9 +28,8 @@
 #define JMP1		10
 
 static struct mad_decoder decoder;
-static mad_timer_t played;
-static int afd;			/* oss fd */
 static struct termios termios;
+static int afd;			/* oss fd */
 
 static char filename[1 << 12];
 static unsigned char *mem;
@@ -38,6 +37,7 @@ static long len;
 static long pos;
 static int frame_sz;		/* frame size */
 static int frame_ms;		/* frame duration in milliseconds */
+static int played;		/* playing time in milliseconds */
 static int rate;
 
 static int exited;
@@ -69,12 +69,11 @@ static void updatepos(void)
 static void printinfo(void)
 {
 	int per = pos * 1000.0 / len;
-	int dur = mad_timer_count(played, MAD_UNITS_DECISECONDS);
 	int loc = pos / frame_sz * frame_ms / 1000;
 	printf("%02d.%d%%  (%d:%02d:%02d - %04d.%ds)  [%30s]\r",
 		per / 10, per % 10,
 		loc / 3600, (loc % 3600) / 60, loc % 60,
-		dur / 10, dur % 10,
+		played / 1000, (played / 100) % 10,
 		filename);
 	fflush(stdout);
 }
@@ -193,7 +192,8 @@ static enum mad_flow output(void *data,
 {
 	int i;
 	int right = pcm->channels > 1 ? 1 : 0;
-	mad_timer_add(&played, decoder.sync->frame.header.duration);
+	played += mad_timer_count(decoder.sync->frame.header.duration,
+					MAD_UNITS_MILLISECONDS);
 	for (i = 0; i < pcm->length; i++) {
 		push_sample(mixed + i * 4, scale(pcm->samples[0][i]));
 		push_sample(mixed + i * 4 + 2, scale(pcm->samples[right][i]));
