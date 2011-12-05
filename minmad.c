@@ -32,8 +32,8 @@ static unsigned char *mem;
 static unsigned long len;
 static struct mad_decoder decoder;
 static unsigned long pos;
-static int fsize;		/* frame size */
-static int flen;		/* frame duration in milliseconds */
+static int frame_sz;		/* frame size */
+static int frame_ms;		/* frame duration in milliseconds */
 static int count;
 static mad_timer_t played;
 static unsigned int rate;
@@ -52,12 +52,15 @@ static int readkey(void)
 
 static void updatepos(void)
 {
+	int sz, ms;
 	if (decoder.sync) {
 		pos = decoder.sync->stream.this_frame - mem;
-		fsize = decoder.sync->stream.next_frame -
+		sz = decoder.sync->stream.next_frame -
 			decoder.sync->stream.this_frame;
-		flen = mad_timer_count(decoder.sync->frame.header.duration,
+		ms = mad_timer_count(decoder.sync->frame.header.duration,
 					MAD_UNITS_MILLISECONDS);
+		frame_ms = frame_ms ? ((frame_ms << 3) - frame_ms + ms) >> 3 : ms;
+		frame_sz = frame_sz ? ((frame_sz << 3) - frame_sz + sz) >> 3 : sz;
 	}
 }
 
@@ -65,7 +68,7 @@ static void printinfo(void)
 {
 	int per = pos * 1000.0 / len;
 	int dur = mad_timer_count(played, MAD_UNITS_DECISECONDS);
-	int loc = pos * flen / fsize / 1000;
+	int loc = pos * frame_ms / frame_sz / 1000;
 	printf("minmad:   %3d:%02d   %3d.%d%%   %8d.%ds\r",
 		loc / 60, loc % 60,
 		per / 10, per % 10, dur / 10, dur % 10);
@@ -81,14 +84,14 @@ static int getcount(int def)
 
 static void seek(int n)
 {
-	int diff = n * fsize * 1000 / (flen ? flen : 40);
+	int diff = n * frame_sz * 1000 / (frame_ms ? frame_ms : 40);
 	pos = MAX(0, MIN(len, pos + diff));
 }
 
 static void seek_thousands(int n)
 {
 	pos = len * (float) n / 1000;
-	pos -= pos % fsize;
+	pos -= pos % frame_sz;
 }
 
 static int execkey(void)
