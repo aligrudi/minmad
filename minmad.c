@@ -70,7 +70,8 @@ static void printinfo(void)
 {
 	int per = pos * 1000.0 / len;
 	int loc = pos / frame_sz * frame_ms / 1000;
-	printf("%02d.%d%%  (%d:%02d:%02d - %04d.%ds)  [%30s]\r",
+	printf("%c %02d.%d%%  (%d:%02d:%02d - %04d.%ds)   [%s]\r",
+		paused ? ' ' : '>',
 		per / 10, per % 10,
 		loc / 3600, (loc % 3600) / 60, loc % 60,
 		played / 1000, (played / 100) % 10,
