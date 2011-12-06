@@ -294,5 +294,6 @@ int main(int argc, char *argv[])
 	term_cleanup();
 	munmap(mem, stat.st_size);
 	close(fd);
+	printf("\n");
 	return 0;
 }
