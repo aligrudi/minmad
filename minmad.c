@@ -44,10 +44,33 @@ static int exited;
 static int paused;
 static int count;
 
+static int oss_open(void)
+{
+	afd = open("/dev/dsp", O_WRONLY);
+	return afd < 0;
+}
+
+static void oss_close(void)
+{
+	if (afd > 0)		/* zero fd is used for input */
+		close(afd);
+	afd = 0;
+	rate = 0;
+}
+
+static void oss_conf(void)
+{
+	int ch = 2;
+	int bits = 16;
+	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
+	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
+	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
+}
+
 static int readkey(void)
 {
 	char b;
-	if (read(STDIN_FILENO, &b, 1) <= 0)
+	if (read(0, &b, 1) <= 0)
 		return -1;
 	return b;
 }
@@ -71,7 +94,7 @@ static void printinfo(void)
 	int per = pos * 1000.0 / len;
 	int loc = pos / frame_sz * frame_ms / 1000;
 	printf("%c %02d.%d%%  (%d:%02d:%02d - %04d.%ds)   [%s]\r",
-		paused ? ' ' : '>',
+		paused ? (afd < 0 ? '*' : ' ') : '>',
 		per / 10, per % 10,
 		loc / 3600, (loc % 3600) / 60, loc % 60,
 		played / 1000, (played / 100) % 10,
@@ -130,6 +153,11 @@ static int execkey(void)
 			break;
 		case 'p':
 		case ' ':
+			if (paused)
+				if (oss_open())
+					break;
+			if (!paused)
+				oss_close();
 			paused = !paused;
 			return 1;
 		case 'q':
@@ -177,15 +205,6 @@ static void push_sample(char *buf, mad_fixed_t sample)
 	*buf++ = (sample >> 8) & 0xff;
 }
 
-static void oss_conf(void)
-{
-	int ch = 2;
-	int bits = 16;
-	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
-	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
-	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
-}
-
 static char mixed[1 << 20];
 static enum mad_flow output(void *data,
 			 struct mad_header const *header,
@@ -217,7 +236,7 @@ static enum mad_flow error(void *data,
 static void waitkey(void)
 {
 	struct pollfd ufds[1];
-	ufds[0].fd = STDIN_FILENO;
+	ufds[0].fd = 0;
 	ufds[0].events = POLLIN;
 	poll(ufds, 1, -1);
 }
@@ -236,34 +255,20 @@ static void decode(void)
 	mad_decoder_finish(&decoder);
 }
 
-static void oss_init(void)
-{
-	afd = open("/dev/dsp", O_WRONLY);
-	if (afd < 0) {
-		fprintf(stderr, "cannot open /dev/dsp\n");
-		exit(1);
-	}
-}
-
-static void oss_close(void)
-{
-	close(afd);
-}
-
 static void term_setup(void)
 {
 	struct termios newtermios;
-	tcgetattr(STDIN_FILENO, &termios);
+	tcgetattr(0, &termios);
 	newtermios = termios;
 	newtermios.c_lflag &= ~ICANON;
 	newtermios.c_lflag &= ~ECHO;
-	tcsetattr(STDIN_FILENO, TCSAFLUSH, &newtermios);
-	fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
+	tcsetattr(0, TCSAFLUSH, &newtermios);
+	fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 }
 
 static void term_cleanup(void)
 {
-	tcsetattr(STDIN_FILENO, 0, &termios);
+	tcsetattr(0, 0, &termios);
 }
 
 static void sigcont(int sig)
@@ -288,7 +293,10 @@ int main(int argc, char *argv[])
 		return 1;
 	term_setup();
 	signal(SIGCONT, sigcont);
-	oss_init();
+	if (oss_open()) {
+		fprintf(stderr, "minmad: /dev/dsp busy?\n");
+		return 1;
+	}
 	decode();
 	oss_close();
 	term_cleanup();
