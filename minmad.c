@@ -1,9 +1,9 @@
 /*
  * minmad - a minimal mp3 player using libmad and oss
  *
- * Copyright (C) 2009-2011 Ali Gholami Rudi
+ * Copyright (C) 2009-2013 Ali Gholami Rudi
  *
- * This program is released under GNU GPL version 2.
+ * This program is released under the modified BSD license.
  */
 #include <ctype.h>
 #include <fcntl.h>
@@ -181,9 +181,9 @@ static void oss_conf(void)
 {
 	int ch = 2;
 	int bits = 16;
-	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
 	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
 	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
+	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
 }
 
 static char mixed[1 << 20];
@@ -238,7 +238,7 @@ static void decode(void)
 
 static void oss_init(void)
 {
-	afd = open("/dev/dsp", O_RDWR);
+	afd = open("/dev/dsp", O_WRONLY);
 	if (afd < 0) {
 		fprintf(stderr, "cannot open /dev/dsp\n");
 		exit(1);
