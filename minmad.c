@@ -8,33 +8,31 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <pty.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <sys/poll.h>
 #include <termios.h>
 #include <unistd.h>
 #include <sys/soundcard.h>
 #include <mad.h>
 
-#define CTRLKEY(x)		((x) - 96)
+#define CTRLKEY(x)	((x) - 96)
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
-#define JMP3		600
-#define JMP2		60
-#define JMP1		10
 
-static struct mad_decoder decoder;
-static struct termios termios;
+static struct mad_decoder maddec;
 static int afd;			/* oss fd */
 
-static char filename[1 << 12];
-static unsigned char *mem;
-static long len;
-static long pos;
+static char filename[128];
+static int mfd;			/* input file descriptor */
+static long msize;		/* file size */
+static unsigned char mbuf[1 << 16];
+static long mpos;		/* the position of mbuf[] */
+static long mlen;		/* data in mbuf[] */
+static long moff;		/* offset into mbuf[] */
+static long mark[256];		/* mark positions */
 static int frame_sz;		/* frame size */
 static int frame_ms;		/* frame duration in milliseconds */
 static int played;		/* playing time in milliseconds */
@@ -42,6 +40,9 @@ static int rate;
 
 static int exited;
 static int paused;
+static int domark;
+static int dojump;
+static int doseek;
 static int count;
 
 static int oss_open(void)
@@ -58,41 +59,33 @@ static void oss_close(void)
 	rate = 0;
 }
 
-static void oss_conf(void)
+static void oss_conf(int rate, int ch, int bits)
 {
-	int ch = 2;
-	int bits = 16;
 	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
 	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
 	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
 }
 
-static int readkey(void)
+static int cmdread(void)
 {
 	char b;
 	if (read(0, &b, 1) <= 0)
 		return -1;
-	return b;
+	return (unsigned char) b;
 }
 
-static void updatepos(void)
+static void cmdwait(void)
 {
-	int sz, ms;
-	if (decoder.sync) {
-		pos = decoder.sync->stream.this_frame - mem;
-		sz = decoder.sync->stream.next_frame -
-			decoder.sync->stream.this_frame;
-		ms = mad_timer_count(decoder.sync->frame.header.duration,
-					MAD_UNITS_MILLISECONDS);
-		frame_ms = frame_ms ? ((frame_ms << 5) - frame_ms + ms) >> 5 : ms;
-		frame_sz = frame_sz ? ((frame_sz << 5) - frame_sz + sz) >> 5 : sz;
-	}
+	struct pollfd ufds[1];
+	ufds[0].fd = 0;
+	ufds[0].events = POLLIN;
+	poll(ufds, 1, -1);
 }
 
-static void printinfo(void)
+static void cmdinfo(void)
 {
-	int per = pos * 1000.0 / len;
-	int loc = pos / frame_sz * frame_ms / 1000;
+	int per = (mpos + moff) * 1000 / msize;
+	int loc = (mpos + moff) / frame_sz * frame_ms / 1000;
 	printf("%c %02d.%d%%  (%d:%02d:%02d - %04d.%ds)   [%s]\r",
 		paused ? (afd < 0 ? '*' : ' ') : '>',
 		per / 10, per % 10,
@@ -102,56 +95,77 @@ static void printinfo(void)
 	fflush(stdout);
 }
 
-static int getcount(int def)
+static int cmdcount(int def)
 {
 	int result = count ? count : def;
 	count = 0;
 	return result;
 }
 
-static void seek(int n)
+static void seek(long pos)
+{
+	mark['\''] = mpos + moff;
+	mpos = MAX(0, MIN(msize, pos));
+	doseek = 1;
+}
+
+static void cmdseekrel(int n)
 {
 	int diff = n * frame_sz * 1000 / (frame_ms ? frame_ms : 40);
-	pos = MAX(0, MIN(len, pos + diff));
+	seek(mpos + moff + diff);
 }
 
-static void seek_thousands(int n)
+static void cmdseek100(int n)
 {
-	if (n <= 1000) {
-		pos = len * n / 1000;
-		pos -= pos % frame_sz;
-	}
+	if (n <= 100)
+		seek(msize * n / 100);
 }
 
-static int execkey(void)
+static int cmdexec(void)
 {
 	int c;
-	updatepos();
-	while ((c = readkey()) != -1) {
+	while ((c = cmdread()) >= 0) {
+		if (domark) {
+			domark = 0;
+			mark[c] = mpos + moff;
+			return 0;
+		}
+		if (dojump) {
+			dojump = 0;
+			if (mark[c] > 0)
+				seek(mark[c]);
+			return mark[c] > 0;
+		}
 		switch (c) {
 		case 'J':
-			seek(JMP3 * getcount(1));
+			cmdseekrel(+600 * cmdcount(1));
 			return 1;
 		case 'K':
-			seek(-JMP3 * getcount(1));
+			cmdseekrel(-600 * cmdcount(1));
 			return 1;
 		case 'j':
-			seek(JMP2 * getcount(1));
+			cmdseekrel(+60 * cmdcount(1));
 			return 1;
 		case 'k':
-			seek(-JMP2 * getcount(1));
+			cmdseekrel(-60 * cmdcount(1));
 			return 1;
 		case 'l':
-			seek(JMP1 * getcount(1));
+			cmdseekrel(+10 * cmdcount(1));
 			return 1;
 		case 'h':
-			seek(-JMP1 * getcount(1));
+			cmdseekrel(-10 * cmdcount(1));
 			return 1;
 		case '%':
-			seek_thousands(getcount(0) * 10);
+			cmdseek100(cmdcount(0));
 			return 1;
 		case 'i':
-			printinfo();
+			cmdinfo();
+			break;
+		case 'm':
+			domark = 1;
+			break;
+		case '\'':
+			dojump = 1;
 			break;
 		case 'p':
 		case ' ':
@@ -176,134 +190,135 @@ static int execkey(void)
 	return 0;
 }
 
-static enum mad_flow input(void *data, struct mad_stream *stream)
+static enum mad_flow madinput(void *data, struct mad_stream *stream)
 {
-	static unsigned long cpos;
-	if (pos && pos == cpos) {
+	int nread = stream->next_frame ? stream->next_frame - mbuf : 0;
+	int nleft = nread ? mlen - nread : 0;
+	int nr;
+	if (doseek) {
+		doseek = 0;
+		nleft = 0;
+		nread = 0;
+		lseek(mfd, mpos, 0);
+	}
+	memmove(mbuf, mbuf + nread, nleft);
+	if ((nr = read(mfd, mbuf + nleft, sizeof(mbuf) - nleft)) <= 0) {
 		exited = 1;
 		return MAD_FLOW_STOP;
 	}
-	cpos = pos;
-	mad_stream_buffer(stream, mem + pos, len - pos);
+	mlen = nleft + nr;
+	mad_stream_buffer(stream, mbuf, mlen);
+	mpos += nread;
+	moff = 0;
 	return MAD_FLOW_CONTINUE;
 }
 
-static signed int scale(mad_fixed_t sample)
+static signed int madscale(mad_fixed_t sample)
 {
-	/* round */
-	sample += (1L << (MAD_F_FRACBITS - 16));
-	/* clip */
-	if (sample >= MAD_F_ONE)
+	sample += (1l << (MAD_F_FRACBITS - 16));	/* round */
+	if (sample >= MAD_F_ONE)			/* clip */
 		sample = MAD_F_ONE - 1;
-	else if (sample < -MAD_F_ONE)
+	if (sample < -MAD_F_ONE)
 		sample = -MAD_F_ONE;
-	/* quantize */
-	return sample >> (MAD_F_FRACBITS + 1 - 16);
+	return sample >> (MAD_F_FRACBITS + 1 - 16);	/* quantize */
 }
 
-static void push_sample(char *buf, mad_fixed_t sample)
+static void madupdate(void)
 {
-	*buf++ = (sample >> 0) & 0xff;
-	*buf++ = (sample >> 8) & 0xff;
+	int sz, ms;
+	if (maddec.sync) {
+		moff = maddec.sync->stream.this_frame - mbuf;
+		sz = maddec.sync->stream.next_frame -
+			maddec.sync->stream.this_frame;
+		ms = mad_timer_count(maddec.sync->frame.header.duration,
+					MAD_UNITS_MILLISECONDS);
+		frame_ms = frame_ms ? ((frame_ms << 5) - frame_ms + ms) >> 5 : ms;
+		frame_sz = frame_sz ? ((frame_sz << 5) - frame_sz + sz) >> 5 : sz;
+	}
 }
 
-static char mixed[1 << 20];
-static enum mad_flow output(void *data,
+static char mixed[1 << 18];
+static enum mad_flow madoutput(void *data,
 			 struct mad_header const *header,
 			 struct mad_pcm *pcm)
 {
+	int c1 = 0;
+	int c2 = pcm->channels > 1 ? 1 : 0;
 	int i;
-	int right = pcm->channels > 1 ? 1 : 0;
-	played += mad_timer_count(decoder.sync->frame.header.duration,
+	played += mad_timer_count(maddec.sync->frame.header.duration,
 					MAD_UNITS_MILLISECONDS);
 	for (i = 0; i < pcm->length; i++) {
-		push_sample(mixed + i * 4, scale(pcm->samples[0][i]));
-		push_sample(mixed + i * 4 + 2, scale(pcm->samples[right][i]));
+		mixed[i * 4 + 0] = madscale(pcm->samples[c1][i]) & 0xff;
+		mixed[i * 4 + 1] = (madscale(pcm->samples[c1][i]) >> 8) & 0xff;
+		mixed[i * 4 + 2] = madscale(pcm->samples[c2][i]) & 0xff;
+		mixed[i * 4 + 3] = (madscale(pcm->samples[c2][i]) >> 8) & 0xff;
 	}
 	if (header->samplerate != rate) {
 		rate = header->samplerate;
-		oss_conf();
+		oss_conf(rate, 2, 16);
 	}
 	write(afd, mixed, pcm->length * 4);
-	return execkey() ? MAD_FLOW_STOP : MAD_FLOW_CONTINUE;
+	madupdate();
+	return cmdexec() ? MAD_FLOW_STOP : MAD_FLOW_CONTINUE;
 }
 
-static enum mad_flow error(void *data,
+static enum mad_flow maderror(void *data,
 				struct mad_stream *stream,
 				struct mad_frame *frame)
 {
 	return MAD_FLOW_CONTINUE;
 }
 
-static void waitkey(void)
+static void maddecode(void)
 {
-	struct pollfd ufds[1];
-	ufds[0].fd = 0;
-	ufds[0].events = POLLIN;
-	poll(ufds, 1, -1);
-}
-
-static void decode(void)
-{
-	mad_decoder_init(&decoder, NULL, input, 0, 0, output, error, 0);
+	mad_decoder_init(&maddec, NULL, madinput, 0, 0, madoutput, maderror, 0);
 	while (!exited) {
 		if (paused) {
-			waitkey();
-			execkey();
+			cmdwait();
+			cmdexec();
 		} else {
-			mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
+			mad_decoder_run(&maddec, MAD_DECODER_MODE_SYNC);
 		}
 	}
-	mad_decoder_finish(&decoder);
+	mad_decoder_finish(&maddec);
 }
 
-static void term_setup(void)
+static void term_init(struct termios *termios)
 {
 	struct termios newtermios;
-	tcgetattr(0, &termios);
-	newtermios = termios;
+	tcgetattr(0, termios);
+	newtermios = *termios;
 	newtermios.c_lflag &= ~ICANON;
 	newtermios.c_lflag &= ~ECHO;
 	tcsetattr(0, TCSAFLUSH, &newtermios);
 	fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 }
 
-static void term_cleanup(void)
+static void term_done(struct termios *termios)
 {
-	tcsetattr(0, 0, &termios);
-}
-
-static void sigcont(int sig)
-{
-	term_setup();
+	tcsetattr(0, 0, termios);
 }
 
 int main(int argc, char *argv[])
 {
 	struct stat stat;
-	int fd;
+	struct termios termios;
 	if (argc < 2)
 		return 1;
-	fd = open(argv[1], O_RDONLY);
-	strcpy(filename, argv[1]);
-	filename[30] = '\0';
-	if (fstat(fd, &stat) == -1 || stat.st_size == 0)
+	snprintf(filename, 30, "%s", argv[1]);
+	mfd = open(argv[1], O_RDONLY);
+	if (fstat(mfd, &stat) == -1 || stat.st_size == 0)
 		return 1;
-	mem = mmap(0, stat.st_size, PROT_READ, MAP_SHARED, fd, 0);
-	len = stat.st_size;
-	if (mem == MAP_FAILED)
-		return 1;
+	msize = stat.st_size;
 	if (oss_open()) {
 		fprintf(stderr, "minmad: /dev/dsp busy?\n");
 		return 1;
 	}
-	term_setup();
-	signal(SIGCONT, sigcont);
-	decode();
+	term_init(&termios);
+	maddecode();
 	oss_close();
-	term_cleanup();
-	munmap(mem, stat.st_size);
-	close(fd);
+	term_done(&termios);
+	close(mfd);
 	printf("\n");
 	return 0;
 }
