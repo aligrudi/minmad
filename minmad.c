@@ -192,9 +192,9 @@ static int cmdexec(void)
 
 static enum mad_flow madinput(void *data, struct mad_stream *stream)
 {
-	int nread = stream->next_frame ? stream->next_frame - mbuf : 0;
-	int nleft = nread ? mlen - nread : 0;
-	int nr;
+	int nread = stream->next_frame ? stream->next_frame - mbuf : moff;
+	int nleft = mlen - nread;
+	int nr = 0;
 	if (doseek) {
 		doseek = 0;
 		nleft = 0;
@@ -202,9 +202,11 @@ static enum mad_flow madinput(void *data, struct mad_stream *stream)
 		lseek(mfd, mpos, 0);
 	}
 	memmove(mbuf, mbuf + nread, nleft);
-	if ((nr = read(mfd, mbuf + nleft, sizeof(mbuf) - nleft)) <= 0) {
-		exited = 1;
-		return MAD_FLOW_STOP;
+	if (nleft < sizeof(mbuf)) {
+		if ((nr = read(mfd, mbuf + nleft, sizeof(mbuf) - nleft)) <= 0) {
+			exited = 1;
+			return MAD_FLOW_STOP;
+		}
 	}
 	mlen = nleft + nr;
 	mad_stream_buffer(stream, mbuf, mlen);
