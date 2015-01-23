@@ -1,9 +1,9 @@
 /*
  * minmad - a minimal mp3 player using libmad and oss
  *
- * Copyright (C) 2009-2013 Ali Gholami Rudi
+ * Copyright (C) 2009-2015 Ali Gholami Rudi
  *
- * This program is released under the modified BSD license.
+ * This program is released under the Modified BSD license.
  */
 #include <ctype.h>
 #include <fcntl.h>
@@ -291,12 +291,12 @@ int main(int argc, char *argv[])
 	len = stat.st_size;
 	if (mem == MAP_FAILED)
 		return 1;
-	term_setup();
-	signal(SIGCONT, sigcont);
 	if (oss_open()) {
 		fprintf(stderr, "minmad: /dev/dsp busy?\n");
 		return 1;
 	}
+	term_setup();
+	signal(SIGCONT, sigcont);
 	decode();
 	oss_close();
 	term_cleanup();
