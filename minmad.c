@@ -117,8 +117,10 @@ static void seek(int n)
 
 static void seek_thousands(int n)
 {
-	pos = len * (float) n / 1000;
-	pos -= pos % frame_sz;
+	if (n <= 1000) {
+		pos = len * n / 1000;
+		pos -= pos % frame_sz;
+	}
 }
 
 static int execkey(void)
