@@ -82,10 +82,15 @@ static void cmdwait(void)
 	poll(ufds, 1, -1);
 }
 
+static long muldiv64(long num, long mul, long div)
+{
+	return (long long) num * mul / div;
+}
+
 static void cmdinfo(void)
 {
-	int per = (mpos + moff) * 1000 / msize;
-	int loc = (mpos + moff) / frame_sz * frame_ms / 1000;
+	int per = muldiv64(mpos + moff, 1000, msize);
+	int loc = muldiv64(mpos + moff, frame_ms, frame_sz * 1000);
 	printf("%c %02d.%d%%  (%d:%02d:%02d - %04d.%ds)   [%s]\r",
 		paused ? (afd < 0 ? '*' : ' ') : '>',
 		per / 10, per % 10,
@@ -111,14 +116,14 @@ static void seek(long pos)
 
 static void cmdseekrel(int n)
 {
-	int diff = n * frame_sz * 1000 / (frame_ms ? frame_ms : 40);
+	int diff = muldiv64(n, frame_sz * 1000, frame_ms ? frame_ms : 40);
 	seek(mpos + moff + diff);
 }
 
 static void cmdseek100(int n)
 {
 	if (n <= 100)
-		seek(msize * n / 100);
+		seek(muldiv64(msize, n, 100));
 }
 
 static int cmdexec(void)
