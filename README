@@ -1,0 +1,22 @@
+MINMAD
+======
+
+Minmad is a small libmad/OSS MP3 player.
+
+The following commands are available in minmad.  Most of them
+accept a numerical prefix.
+
+==============  ================================================
+KEY		ACTION
+==============  ================================================
+p or space	pause
+q		exit minmad
+i		print some information
+l/j/J		jump 10s/60s/600s forward
+h/k/K		jump 10s/60s/600s backward
+%		jump to the specified position (in percentage)
+^[ or escape	clear the numerical prefix
+mx		mark the current position in register 'x'
+'x		jump to the position stored in register 'x'
+P		pause after the specified number of minutes
+==============  ================================================
