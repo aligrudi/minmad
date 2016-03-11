@@ -1,7 +1,7 @@
 /*
  * minmad - a minimal mp3 player using libmad and oss
  *
- * Copyright (C) 2009-2015 Ali Gholami Rudi
+ * Copyright (C) 2009-2016 Ali Gholami Rudi
  *
  * This program is released under the Modified BSD license.
  */
@@ -36,7 +36,8 @@ static long mark[256];		/* mark positions */
 static int frame_sz;		/* frame size */
 static int frame_ms;		/* frame duration in milliseconds */
 static int played;		/* playing time in milliseconds */
-static int rate;
+static int rate;		/* current oss sample rate */
+static int topause;		/* planned pause (compared with played) */
 
 static int exited;
 static int paused;
@@ -126,9 +127,27 @@ static void cmdseek100(int n)
 		seek(muldiv64(msize, n, 100));
 }
 
+static int cmdpause(int pause)
+{
+	if (!pause && paused) {
+		if (oss_open())
+			return 1;
+		paused = 0;
+	}
+	if (pause && !paused) {
+		oss_close();
+		paused = 1;
+	}
+	return 0;
+}
+
 static int cmdexec(void)
 {
 	int c;
+	if (topause > 0 && topause <= played) {
+		topause = 0;
+		return !cmdpause(1);
+	}
 	while ((c = cmdread()) >= 0) {
 		if (domark) {
 			domark = 0;
@@ -174,13 +193,12 @@ static int cmdexec(void)
 			break;
 		case 'p':
 		case ' ':
-			if (paused)
-				if (oss_open())
-					break;
-			if (!paused)
-				oss_close();
-			paused = !paused;
+			if (cmdpause(!paused))
+				break;
 			return 1;
+		case 'P':
+			topause = count ? played + cmdcount(0) * 60000 : 0;
+			break;
 		case 'q':
 			exited = 1;
 			return 1;
@@ -310,9 +328,12 @@ int main(int argc, char *argv[])
 {
 	struct stat stat;
 	struct termios termios;
-	if (argc < 2)
+	char *path = argc >= 2 ? argv[1] : NULL;
+	if (!path)
 		return 1;
-	snprintf(filename, 30, "%s", argv[1]);
+	if (strchr(path, '/'))
+		path = strrchr(path, '/') + 1;
+	snprintf(filename, 30, "%s", path);
 	mfd = open(argv[1], O_RDONLY);
 	if (fstat(mfd, &stat) == -1 || stat.st_size == 0)
 		return 1;
