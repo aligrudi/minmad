@@ -18,7 +18,6 @@
 #include <sys/soundcard.h>
 #include <mad.h>
 
-#define CTRLKEY(x)	((x) - 96)
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
 
@@ -127,6 +126,12 @@ static void cmdseek100(int n)
 		seek(muldiv64(msize, n, 100));
 }
 
+static void cmdseek(int n)
+{
+	long pos = muldiv64(n * 60, frame_sz * 1000, frame_ms ? frame_ms : 40);
+	seek(pos);
+}
+
 static int cmdpause(int pause)
 {
 	if (!pause && paused) {
@@ -181,6 +186,9 @@ static int cmdexec(void)
 			return 1;
 		case '%':
 			cmdseek100(cmdcount(0));
+			return 1;
+		case 'G':
+			cmdseek(cmdcount(0));
 			return 1;
 		case 'i':
 			cmdinfo();

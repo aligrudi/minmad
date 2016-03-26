@@ -14,7 +14,8 @@ q		exit minmad
 i		print some information
 l/j/J		jump 10s/60s/600s forward
 h/k/K		jump 10s/60s/600s backward
-%		jump to the specified position (in percentage)
+%		jump to the specified position in percentage
+G		jump to the specified position in minutes
 ^[ or escape	clear the numerical prefix
 mx		mark the current position in register 'x'
 'x		jump to the position stored in register 'x'
