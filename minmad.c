@@ -25,6 +25,7 @@ static struct mad_decoder maddec;
 static int afd;			/* oss fd */
 
 static char filename[128];
+static char *ossdsp;		/* oss device */
 static int mfd;			/* input file descriptor */
 static long msize;		/* file size */
 static unsigned char mbuf[1 << 16];
@@ -47,7 +48,7 @@ static int count;
 
 static int oss_open(void)
 {
-	afd = open("/dev/dsp", O_WRONLY);
+	afd = open(ossdsp ? ossdsp : "/dev/dsp", O_WRONLY);
 	return afd < 0;
 }
 
@@ -348,6 +349,7 @@ int main(int argc, char *argv[])
 	if (fstat(mfd, &stat) == -1 || stat.st_size == 0)
 		return 1;
 	msize = stat.st_size;
+	ossdsp = getenv("OSSDSP");
 	if (oss_open()) {
 		fprintf(stderr, "minmad: /dev/dsp busy?\n");
 		return 1;
