@@ -61,9 +61,11 @@ static void oss_close(void)
 
 static void oss_conf(int rate, int ch, int bits)
 {
+	int frag = 0x0003000b;	/* 0xmmmmssss: 2^m fragments of size 2^s each */
 	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
 	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
 	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
+	ioctl(afd, SOUND_PCM_SETFRAGMENT, &frag);
 }
 
 static int cmdread(void)
