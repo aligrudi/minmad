@@ -1,7 +1,7 @@
 /*
- * minmad - a minimal mp3 player using libmad and oss
+ * MINMAD - A MINIMAL MP3 PLAYER USING MINIMP3 AND OSS
  *
- * Copyright (C) 2009-2016 Ali Gholami Rudi
+ * Copyright (C) 2009-2024 Ali Gholami Rudi
  *
  * This program is released under the Modified BSD license.
  */
@@ -16,27 +16,20 @@
 #include <termios.h>
 #include <unistd.h>
 #include <sys/soundcard.h>
-#include <mad.h>
+#include "minmad.h"
 
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
 
-static struct mad_decoder maddec;
-static int afd;			/* oss fd */
+static int oss_fd;		/* oss fd */
 
 static char filename[128];
 static char *ossdsp;		/* oss device */
-static int mfd;			/* input file descriptor */
-static long msize;		/* file size */
-static unsigned char mbuf[1 << 16];
-static long mpos;		/* the position of mbuf[] */
-static long mlen;		/* data in mbuf[] */
-static long moff;		/* offset into mbuf[] */
 static long mark[256];		/* mark positions */
-static int frame_sz;		/* frame size */
-static int frame_ms;		/* frame duration in milliseconds */
+static int frame_sz;		/* last frame size */
+static int frame_ms;		/* last frame duration in milliseconds */
 static int played;		/* playing time in milliseconds */
-static int rate;		/* current oss sample rate */
+static int oss_rate, oss_ch, oss_bits;
 static int topause;		/* planned pause (compared with played) */
 
 static int exited;
@@ -48,25 +41,25 @@ static int count;
 
 static int oss_open(void)
 {
-	afd = open(ossdsp ? ossdsp : "/dev/dsp", O_WRONLY);
-	return afd < 0;
+	oss_fd = open(ossdsp, O_WRONLY);
+	return oss_fd < 0;
 }
 
 static void oss_close(void)
 {
-	if (afd > 0)		/* zero fd is used for input */
-		close(afd);
-	afd = 0;
-	rate = 0;
+	if (oss_fd > 0)		/* zero fd is used for input */
+		close(oss_fd);
+	oss_fd = 0;
+	oss_rate = 0;
 }
 
 static void oss_conf(int rate, int ch, int bits)
 {
 	int frag = 0x0003000b;	/* 0xmmmmssss: 2^m fragments of size 2^s each */
-	ioctl(afd, SOUND_PCM_WRITE_CHANNELS, &ch);
-	ioctl(afd, SOUND_PCM_WRITE_BITS, &bits);
-	ioctl(afd, SOUND_PCM_WRITE_RATE, &rate);
-	ioctl(afd, SOUND_PCM_SETFRAGMENT, &frag);
+	ioctl(oss_fd, SOUND_PCM_WRITE_CHANNELS, &ch);
+	ioctl(oss_fd, SOUND_PCM_WRITE_BITS, &bits);
+	ioctl(oss_fd, SOUND_PCM_WRITE_RATE, &rate);
+	ioctl(oss_fd, SOUND_PCM_SETFRAGMENT, &frag);
 }
 
 static int cmdread(void)
@@ -92,10 +85,13 @@ static long muldiv64(long num, long mul, long div)
 
 static void cmdinfo(void)
 {
-	int per = muldiv64(mpos + moff, 1000, msize);
-	int loc = muldiv64(mpos + moff, frame_ms, frame_sz * 1000);
+	int per = 0, loc = 0;
+	long pos, len;
+	mm_mark(&pos, &len);
+	per = muldiv64(pos, 1000, len);
+	loc = muldiv64(pos, frame_ms, (frame_sz ? frame_sz : 1) * 1000);
 	printf("%c %02d.%d%%  (%d:%02d:%02d - %04d.%ds)   [%s]\r",
-		paused ? (afd < 0 ? '*' : ' ') : '>',
+		paused ? (oss_fd < 0 ? '*' : ' ') : '>',
 		per / 10, per % 10,
 		loc / 3600, (loc % 3600) / 60, loc % 60,
 		played / 1000, (played / 100) % 10,
@@ -110,23 +106,29 @@ static int cmdcount(int def)
 	return result;
 }
 
-static void seek(long pos)
+static void seek(long newpos)
 {
-	mark['\''] = mpos + moff;
-	mpos = MAX(0, MIN(msize, pos));
+	long pos, len;
+	mm_mark(&pos, &len);
+	mark['\''] = pos;
+	mm_seek(newpos);
 	doseek = 1;
 }
 
 static void cmdseekrel(int n)
 {
 	int diff = muldiv64(n, frame_sz * 1000, frame_ms ? frame_ms : 40);
-	seek(mpos + moff + diff);
+	long pos, len;
+	mm_mark(&pos, &len);
+	seek(pos + diff);
 }
 
 static void cmdseek100(int n)
 {
+	long pos, len;
+	mm_mark(&pos, &len);
 	if (n <= 100)
-		seek(muldiv64(msize, n, 100));
+		seek(muldiv64(len, n, 100));
 }
 
 static void cmdseek(int n)
@@ -158,8 +160,10 @@ static int cmdexec(void)
 	}
 	while ((c = cmdread()) >= 0) {
 		if (domark) {
+			long pos, len;
+			mm_mark(&pos, &len);
 			domark = 0;
-			mark[c] = mpos + moff;
+			mark[c] = pos;
 			return 0;
 		}
 		if (dojump) {
@@ -212,7 +216,7 @@ static int cmdexec(void)
 			break;
 		case 'q':
 			exited = 1;
-			return 1;
+			return -1;
 		case 27:
 			count = 0;
 			break;
@@ -224,99 +228,28 @@ static int cmdexec(void)
 	return 0;
 }
 
-static enum mad_flow madinput(void *data, struct mad_stream *stream)
+static void mainloop(void)
 {
-	int nread = stream->next_frame ? stream->next_frame - mbuf : moff;
-	int nleft = mlen - nread;
-	int nr = 0;
-	if (doseek) {
-		doseek = 0;
-		nleft = 0;
-		nread = 0;
-		lseek(mfd, mpos, 0);
-	}
-	memmove(mbuf, mbuf + nread, nleft);
-	if (nleft < sizeof(mbuf)) {
-		if ((nr = read(mfd, mbuf + nleft, sizeof(mbuf) - nleft)) <= 0) {
-			exited = 1;
-			return MAD_FLOW_STOP;
-		}
-	}
-	mlen = nleft + nr;
-	mad_stream_buffer(stream, mbuf, mlen);
-	mpos += nread;
-	moff = 0;
-	return MAD_FLOW_CONTINUE;
-}
-
-static signed int madscale(mad_fixed_t sample)
-{
-	sample += (1l << (MAD_F_FRACBITS - 16));	/* round */
-	if (sample >= MAD_F_ONE)			/* clip */
-		sample = MAD_F_ONE - 1;
-	if (sample < -MAD_F_ONE)
-		sample = -MAD_F_ONE;
-	return sample >> (MAD_F_FRACBITS + 1 - 16);	/* quantize */
-}
-
-static void madupdate(void)
-{
-	int sz, ms;
-	if (maddec.sync) {
-		moff = maddec.sync->stream.this_frame - mbuf;
-		sz = maddec.sync->stream.next_frame -
-			maddec.sync->stream.this_frame;
-		ms = mad_timer_count(maddec.sync->frame.header.duration,
-					MAD_UNITS_MILLISECONDS);
-		frame_ms = frame_ms ? ((frame_ms << 5) - frame_ms + ms) >> 5 : ms;
-		frame_sz = frame_sz ? ((frame_sz << 5) - frame_sz + sz) >> 5 : sz;
-	}
-}
-
-static char mixed[1 << 18];
-static enum mad_flow madoutput(void *data,
-			 struct mad_header const *header,
-			 struct mad_pcm *pcm)
-{
-	int c1 = 0;
-	int c2 = pcm->channels > 1 ? 1 : 0;
-	int i;
-	played += mad_timer_count(maddec.sync->frame.header.duration,
-					MAD_UNITS_MILLISECONDS);
-	for (i = 0; i < pcm->length; i++) {
-		mixed[i * 4 + 0] = madscale(pcm->samples[c1][i]) & 0xff;
-		mixed[i * 4 + 1] = (madscale(pcm->samples[c1][i]) >> 8) & 0xff;
-		mixed[i * 4 + 2] = madscale(pcm->samples[c2][i]) & 0xff;
-		mixed[i * 4 + 3] = (madscale(pcm->samples[c2][i]) >> 8) & 0xff;
-	}
-	if (header->samplerate != rate) {
-		rate = header->samplerate;
-		oss_conf(rate, 2, 16);
-	}
-	write(afd, mixed, pcm->length * 4);
-	madupdate();
-	return cmdexec() ? MAD_FLOW_STOP : MAD_FLOW_CONTINUE;
-}
-
-static enum mad_flow maderror(void *data,
-				struct mad_stream *stream,
-				struct mad_frame *frame)
-{
-	return MAD_FLOW_CONTINUE;
-}
-
-static void maddecode(void)
-{
-	mad_decoder_init(&maddec, NULL, madinput, 0, 0, madoutput, maderror, 0);
-	while (!exited) {
+	char dec[1 << 15];
+	while (cmdexec() >= 0 && !exited) {
 		if (paused) {
 			cmdwait();
-			cmdexec();
 		} else {
-			mad_decoder_run(&maddec, MAD_DECODER_MODE_SYNC);
+			int rate, ch, bits;
+			long len = sizeof(dec);
+			if (mm_decode(dec, &len, &frame_sz, &rate, &ch, &bits))
+				break;
+			frame_ms = (len * 1000 / 2 / ch) / rate;
+			played += frame_ms;
+			if (rate != oss_rate || ch != oss_ch || bits != oss_bits) {
+				oss_rate = rate;
+				oss_ch = ch;
+				oss_bits = bits;
+				oss_conf(oss_rate, oss_ch, oss_bits);
+			}
+			write(oss_fd, dec, len);
 		}
 	}
-	mad_decoder_finish(&maddec);
 }
 
 static void term_init(struct termios *termios)
@@ -337,7 +270,6 @@ static void term_done(struct termios *termios)
 
 int main(int argc, char *argv[])
 {
-	struct stat stat;
 	struct termios termios;
 	char *path = argc >= 2 ? argv[1] : NULL;
 	if (!path)
@@ -345,20 +277,16 @@ int main(int argc, char *argv[])
 	if (strchr(path, '/'))
 		path = strrchr(path, '/') + 1;
 	snprintf(filename, 30, "%s", path);
-	mfd = open(argv[1], O_RDONLY);
-	if (fstat(mfd, &stat) == -1 || stat.st_size == 0)
-		return 1;
-	msize = stat.st_size;
-	ossdsp = getenv("OSSDSP");
+	mm_init(argv[1]);
+	ossdsp = getenv("OSSDSP") ? getenv("OSSDSP") : "/dev/dsp";
 	if (oss_open()) {
 		fprintf(stderr, "minmad: /dev/dsp busy?\n");
 		return 1;
 	}
 	term_init(&termios);
-	maddecode();
+	mainloop();
 	oss_close();
 	term_done(&termios);
-	close(mfd);
 	printf("\n");
 	return 0;
 }

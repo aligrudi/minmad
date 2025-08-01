@@ -1,8 +1,8 @@
 CC = cc
 CFLAGS = -Wall -O2
-LDFLAGS = -lmad
+LDFLAGS =
 
-OBJS = minmad.o
+OBJS = minmad.o minimp3.o
 
 all: minmad
 .c.o:
