@@ -1,7 +1,8 @@
 MINMAD
 ======
 
-Minmad is a small libmad/OSS MP3 player.
+Minmad is a small MP3 player, using either libmad or minimp3 for
+decoding, and OSS (or ALSA OSS emulation) for playing the audio.
 
 The following commands are available in minmad.  Most of them
 accept a numerical prefix.
